@@ -348,23 +348,27 @@ elif modulo == "2️⃣ Ruteo y Optimización":
             folium.Marker(p['coordenadas'], popup=f"{p['id']}", icon=folium.Icon(color="lightgray", icon="info-sign")).add_to(mapa)
         st_folium(mapa, width=800, height=600)
 
-# --- MÓDULO 3: PORTAL CONDUCTOR (CÁMARA DUAL) ---
+# ------------------------------------------
+# MÓDULO 3: PORTAL CONDUCTOR (TERRENO)
+# ------------------------------------------
 elif modulo == "3️⃣ Portal Conductor (Terreno)":
-    st.markdown("<h2 style='text-align: center; color: #1E3A8A;'>📱 Portal Conductor Terreno</h2>", unsafe_allow_html=True)
+    st.markdown("<h2 style='text-align: center; color: #1E3A8A;'>📱 Portal Operador Terreno</h2>", unsafe_allow_html=True)
     st.divider()
-    pedidos = obtener_pedidos_db(estado_filtro="Pendiente")
-    if not pedidos: st.success("🎉 Todas las entregas han sido completadas.")
+    
+    pedidos_pendientes = obtener_pedidos_db(estado_filtro="Pendiente")
+    if not pedidos_pendientes:
+        st.success("🎉 Ruta completada.")
     else:
-        st.write("Seleccione el pedido para gestionar la entrega:")
-        for p in pedidos:
-            with st.expander(f"ORDEN: {p['id']} | {p['cliente']}"):
-                st.write(f"📍 Dirección: {p['direccion']}")
-                st.info("💡 Tip: Para cambiar de cámara, utiliza el icono de rotación en la interfaz de cámara de tu dispositivo.")
-                foto = st.camera_input("Prueba de Entrega (PoD)", key=f"cam_{p['id']}")
+        for p in pedidos_pendientes:
+            with st.expander(f"📍 {p['direccion']} | {p['cliente']}"):
+                st.write(f"**ID:** {p['id']}")
+                foto = st.camera_input("Capturar evidencia fotográfica", key=f"cam_{p['id']}")
                 if foto:
-                    if st.button("Confirmar Entrega", key=f"btn_{p['id']}", type="primary"):
+                    if st.button("✅ Confirmar Entrega", key=f"btn_{p['id']}", type="primary", use_container_width=True):
                         actualizar_estado_db(p['id'], "Entregado")
-                        limpiar_memoria_rutas(); st.rerun()
+                        limpiar_memoria_rutas() 
+                        st.success("Información transmitida a la Central.")
+                        st.rerun()
 
 # ------------------------------------------
 # MÓDULO 4: INTELIGENCIA DE NEGOCIOS (BI)
