@@ -3,7 +3,6 @@ import folium
 from streamlit_folium import st_folium
 import math
 import pandas as pd
-import random
 import os
 import sqlite3
 import requests
@@ -35,29 +34,46 @@ geolocalizador = Nominatim(user_agent="optiaflux_erp_app")
 COORD_CENTRAL = [-20.2447, -70.1415] 
 
 # ==========================================
-# 2. ARQUITECTURA DE BASE DE DATOS (SQLite)
+# 2. ARQUITECTURA DE BASE DE DATOS Y SECUENCIAS
 # ==========================================
 def init_db():
     conn = sqlite3.connect('optiaflux.db', check_same_thread=False)
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS pedidos 
-                 (id TEXT PRIMARY KEY, cliente TEXT, direccion TEXT, lat REAL, lon REAL, estado TEXT, fecha_ingreso TEXT, foto TEXT)''')
+                 (id TEXT PRIMARY KEY, cliente TEXT, direccion TEXT, lat REAL, lon REAL, estado TEXT, fecha_ingreso TEXT, foto TEXT, fecha_entrega TEXT)''')
     
-    try:
-        c.execute("ALTER TABLE pedidos ADD COLUMN foto TEXT")
-    except:
-        pass
+    # Migraciones seguras para actualizar DBs antiguas
+    try: c.execute("ALTER TABLE pedidos ADD COLUMN foto TEXT")
+    except: pass
+    try: c.execute("ALTER TABLE pedidos ADD COLUMN fecha_entrega TEXT")
+    except: pass
         
     conn.commit()
     return conn
 
 conn = init_db()
 
+def obtener_siguiente_id():
+    """Genera un ID secuencial ordenado leyendo la base de datos."""
+    c = conn.cursor()
+    c.execute("SELECT id FROM pedidos")
+    filas = c.fetchall()
+    if not filas:
+        return "PED-0001"
+    
+    max_num = 0
+    for f in filas:
+        try:
+            num = int(f[0].split("-")[1])
+            if num > max_num: max_num = num
+        except: pass
+    return f"PED-{max_num + 1:04d}"
+
 def guardar_pedido_db(id_ped, cliente, direccion, lat, lon):
     c = conn.cursor()
     fecha = datetime.now(pytz.timezone('America/Santiago')).strftime("%Y-%m-%d %H:%M:%S")
     try:
-        c.execute("INSERT INTO pedidos VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (id_ped, cliente, direccion, lat, lon, "Pendiente", fecha, ""))
+        c.execute("INSERT INTO pedidos VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", (id_ped, cliente, direccion, lat, lon, "Pendiente", fecha, "", ""))
         conn.commit()
         return True
     except sqlite3.IntegrityError:
@@ -66,15 +82,19 @@ def guardar_pedido_db(id_ped, cliente, direccion, lat, lon):
 def obtener_pedidos_db(estado_filtro=None):
     c = conn.cursor()
     if estado_filtro:
-        c.execute("SELECT * FROM pedidos WHERE estado = ?", (estado_filtro,))
+        c.execute("SELECT id, cliente, direccion, lat, lon, estado, fecha_ingreso, foto, fecha_entrega FROM pedidos WHERE estado = ?", (estado_filtro,))
     else:
-        c.execute("SELECT * FROM pedidos")
+        c.execute("SELECT id, cliente, direccion, lat, lon, estado, fecha_ingreso, foto, fecha_entrega FROM pedidos")
     filas = c.fetchall()
-    return [{"id": f[0], "cliente": f[1], "direccion": f[2], "coordenadas": [f[3], f[4]], "estado": f[5], "fecha": f[6], "foto": f[7]} for f in filas]
+    return [{"id": f[0], "cliente": f[1], "direccion": f[2], "coordenadas": [f[3], f[4]], "estado": f[5], "fecha": f[6], "foto": f[7], "fecha_entrega": f[8]} for f in filas]
 
 def actualizar_estado_y_foto_db(id_ped, nuevo_estado, foto_b64=""):
     c = conn.cursor()
-    c.execute("UPDATE pedidos SET estado = ?, foto = ? WHERE id = ?", (nuevo_estado, foto_b64, id_ped))
+    fecha_ahora = datetime.now(pytz.timezone('America/Santiago')).strftime("%Y-%m-%d %H:%M:%S")
+    if nuevo_estado == "Entregado":
+        c.execute("UPDATE pedidos SET estado = ?, foto = ?, fecha_entrega = ? WHERE id = ?", (nuevo_estado, foto_b64, fecha_ahora, id_ped))
+    else:
+        c.execute("UPDATE pedidos SET estado = ?, foto = ? WHERE id = ?", (nuevo_estado, foto_b64, id_ped))
     conn.commit()
 
 def borrar_pedido_db(id_ped):
@@ -158,7 +178,7 @@ def resolver_vrp_multivehiculo(coordenadas_tienda, lista_pedidos, num_vehiculos)
                 node_index = manager.IndexToNode(index)
                 ruta_actual.append(nodos[node_index])
                 index = solution.Value(routing.NextVar(index))
-            # MEJORA: Eliminado el retorno a la matriz para generar una ruta "Solo Ida"
+            # Ruta Solo Ida: No retorna a la central al finalizar
             if len(ruta_actual) > 1: 
                 rutas_vehiculos[f"Vehículo {vehicle_id + 1}"] = ruta_actual
     return rutas_vehiculos
@@ -182,7 +202,7 @@ def trazar_ruta_calles(ruta_ordenada):
     return geometria_completa, dist_km, dist_km * 2 
 
 # ==========================================
-# 4. MOTOR IA PREDICTIVO
+# 4. MOTOR IA PREDICTIVO Y BI (GÉNERO/ENTIDAD)
 # ==========================================
 def obtener_factor_trafico_real():
     zona_horaria = pytz.timezone('America/Santiago')
@@ -198,9 +218,26 @@ def obtener_factor_trafico_real():
 def motor_ia_predictivo_avanzado(tiempo_base_minutos, clima_override):
     factor_trafico, estado_trafico, hora_leida = obtener_factor_trafico_real()
     factor_clima = 1.15 if clima_override == "Lluvia/Niebla" else 1.0
-    
     minutos_finales = tiempo_base_minutos * factor_trafico * factor_clima
     return round(minutos_finales), estado_trafico, hora_leida
+
+def predecir_genero_o_entidad(nombre_completo):
+    """Detecta si es Empresa, Hombre o Mujer basado en reglas heurísticas del español."""
+    if not nombre_completo: return "Desconocido"
+    nombre_lower = nombre_completo.lower()
+    
+    entidades = ['empresa', 'supermercado', 'tienda', 'comercial', 's.a.', 'ltda', 'spa', 'centro', 'hospital', 'clinica', 'municipalidad', 'colegio', 'condominio', 'hotel', 'mall', 'puerto', 'parroquia', 'bomberos', 'feria', 'autodromo', 'sede']
+    if any(word in nombre_lower for word in entidades):
+        return "Empresa/Institución"
+        
+    nombre_pila = nombre_completo.split()[0].lower()
+    excepciones_masculinas = ['jose', 'josé', 'rene', 'rené', 'luis', 'carlos', 'juan', 'manuel', 'david', 'ariel', 'felipe', 'gabriel']
+    excepciones_femeninas = ['carmen', 'pilar', 'luz', 'paz', 'rosario', 'dolores', 'sol', 'abigail', 'raquel', 'inés', 'ines', 'isabel', 'beatriz']
+    
+    if nombre_pila in excepciones_masculinas: return "Hombre"
+    if nombre_pila in excepciones_femeninas: return "Mujer"
+    if nombre_pila.endswith('a'): return "Mujer"
+    return "Hombre"
 
 # ==========================================
 # 5. MEMORIA DE SESIÓN ROBUSTA
@@ -249,19 +286,18 @@ if modulo == "1️⃣ Control de Manifiestos":
                 with st.spinner("Geocodificando..."):
                     coords = obtener_coordenadas(direccion)
                     if coords:
-                        id_ped = f"PED-{random.randint(10000, 99999)}"
-                        if guardar_pedido_db(id_ped, cliente, direccion, coords[0], coords[1]):
+                        id_secuencial = obtener_siguiente_id()
+                        if guardar_pedido_db(id_secuencial, cliente, direccion, coords[0], coords[1]):
                             limpiar_memoria_rutas() 
-                            st.success("Transacción exitosa.")
+                            st.success(f"Transacción exitosa. Asignado: {id_secuencial}")
                             st.rerun()
                     else:
                         st.error("Error geográfico.")
 
     with col2:
-        st.subheader("Integración Masiva (CSV Avanzado)")
+        st.subheader("Integración Masiva (CSV robusto)")
         archivo = st.file_uploader("Formatos aceptados: .csv", type=["csv"])
         if archivo and st.button("Procesar Lote de Datos", type="primary"):
-            # MEJORA: Lectura universal robusta (soporta ; , utf-8 y latin1 automáticamente)
             try:
                 df = pd.read_csv(archivo, sep=None, engine='python', encoding='utf-8')
             except UnicodeDecodeError:
@@ -271,7 +307,7 @@ if modulo == "1️⃣ Control de Manifiestos":
             df.columns = df.columns.str.strip().str.lower()
             
             if 'cliente' in df.columns and 'direccion' in df.columns:
-                df = df.dropna(subset=['cliente', 'direccion']) # Elimina filas vacías
+                df = df.dropna(subset=['cliente', 'direccion'])
                 bar = st.progress(0)
                 exito = 0
                 for idx, row in df.iterrows():
@@ -279,15 +315,15 @@ if modulo == "1️⃣ Control de Manifiestos":
                     if dir_texto and dir_texto.lower() != 'nan':
                         coords = obtener_coordenadas(dir_texto)
                         if coords:
-                            id_ped = f"PED-{random.randint(10000, 99999)}"
-                            guardar_pedido_db(id_ped, str(row['cliente']).strip(), dir_texto, coords[0], coords[1])
+                            id_secuencial = obtener_siguiente_id()
+                            guardar_pedido_db(id_secuencial, str(row['cliente']).strip(), dir_texto, coords[0], coords[1])
                             exito += 1
                     bar.progress((idx + 1) / len(df))
                 limpiar_memoria_rutas()
-                st.success(f"Lote procesado. {exito} registros insertados de {len(df)} válidos.")
+                st.success(f"Lote procesado. {exito} registros insertados ordenadamente.")
                 st.rerun()
             else:
-                st.error("El archivo CSV debe contener las columnas 'cliente' y 'direccion'. Revisa los encabezados.")
+                st.error("El archivo CSV debe contener exactamente las columnas 'cliente' y 'direccion'.")
 
     st.divider()
     st.subheader("Base de Datos Activa (Visualizador de PoD)")
@@ -300,6 +336,7 @@ if modulo == "1️⃣ Control de Manifiestos":
                 with st.expander(f"📦 {p['id']} | 👤 {p['cliente']} | 📍 {p['direccion']} | 🚦 {p['estado']}"):
                     st.write(f"**Fecha de Ingreso:** {p['fecha']}")
                     if p['estado'] == 'Entregado':
+                        st.write(f"**Fecha de Entrega:** {p['fecha_entrega']}")
                         if p['foto']:
                             st.image(base64.b64decode(p['foto']), caption="📸 Fotografía de Comprobación", use_container_width=True)
                         else:
@@ -382,7 +419,7 @@ elif modulo == "3️⃣ Portal Conductor (Terreno)":
     
     pedidos_pendientes = obtener_pedidos_db(estado_filtro="Pendiente")
     if not pedidos_pendientes:
-        st.success("🎉 Ruta completada.")
+        st.success("🎉 Ruta completada. No hay órdenes pendientes.")
     else:
         for p in pedidos_pendientes:
             with st.expander(f"📍 {p['direccion']} | {p['cliente']}"):
@@ -406,36 +443,85 @@ elif modulo == "3️⃣ Portal Conductor (Terreno)":
 # MÓDULO 4: INTELIGENCIA DE NEGOCIOS (BI)
 # ------------------------------------------
 elif modulo == "4️⃣ Inteligencia de Negocios (BI)":
-    st.title("📊 Analítica de Datos")
+    st.title("📊 Analítica de Datos Integral")
     st.divider()
     
-    pedidos_todos = obtener_pedidos_db()
-    if not pedidos_todos:
-        st.info("El sistema requiere data histórica.")
+    datos_brutos = obtener_pedidos_db()
+    if not datos_brutos:
+        st.info("El sistema requiere data histórica para los análisis.")
     else:
-        df = pd.DataFrame(pedidos_todos)
+        df = pd.DataFrame(datos_brutos)
+        
+        # Procesamiento Cronológico y SLA (Acuerdo de Nivel de Servicio)
+        df['fecha_ingreso_dt'] = pd.to_datetime(df['fecha'], errors='coerce')
+        df['fecha_entrega_dt'] = pd.to_datetime(df['fecha_entrega'], errors='coerce')
+        
+        # Fechas y Agrupaciones
+        df['dia'] = df['fecha_ingreso_dt'].dt.date
+        df['mes'] = df['fecha_ingreso_dt'].dt.to_period('M').astype(str)
+        df['año'] = df['fecha_ingreso_dt'].dt.year
+        
+        # Estimación de Demora y SLA (Consideramos "A tiempo" si se entrega dentro de 180 min - 3 horas)
+        df['minutos_demora'] = (df['fecha_entrega_dt'] - df['fecha_ingreso_dt']).dt.total_seconds() / 60
+        df['cumple_tiempo'] = df.apply(lambda x: "A tiempo" if pd.notnull(x['minutos_demora']) and x['minutos_demora'] <= 180 else ("Atrasado" if pd.notnull(x['minutos_demora']) else "Pendiente"), axis=1)
+        
+        # Estimación de Género/Entidad
+        df['perfil_cliente'] = df['cliente'].apply(predecir_genero_o_entidad)
+        
+        # Métricas Globales
         total = len(df)
         entregados = len(df[df['estado'] == 'Entregado'])
         pendientes = total - entregados
         
-        col1, col2, col3 = st.columns(3)
+        st.subheader("Resumen General")
+        col1, col2, col3, col4 = st.columns(4)
         col1.metric("Volumen Total Operado", total)
-        tasa_sla = round((entregados/total)*100, 1) if total>0 else 0
-        col2.metric("Nivel de Servicio (SLA)", f"{tasa_sla}%")
+        col2.metric("Entregas Exitosas", entregados)
         col3.metric("Manifiestos en Tránsito", pendientes)
         
-        st.divider()
-        col_graf, col_calor = st.columns(2)
+        a_tiempo_count = len(df[df['cumple_tiempo'] == 'A tiempo'])
+        tasa_sla = round((a_tiempo_count / entregados) * 100, 1) if entregados > 0 else 0
+        col4.metric("Nivel de SLA (A Tiempo)", f"{tasa_sla}%")
         
-        with col_graf:
-            st.subheader("Estatus Operativo Global")
-            fig = px.pie(df, names='estado', hole=0.4, color='estado', color_discrete_map={'Entregado':'#10B981', 'Pendiente':'#F59E0B'})
-            fig.update_layout(margin=dict(t=0, b=0, l=0, r=0))
-            st.plotly_chart(fig, use_container_width=True)
+        st.divider()
+        
+        # Gráficos Analíticos
+        r1_col1, r1_col2 = st.columns(2)
+        
+        with r1_col1:
+            st.markdown("#### 📈 Flujo de Pedidos por Día")
+            pedidos_por_dia = df.groupby('dia').size().reset_index(name='Cantidad')
+            fig_bar = px.bar(pedidos_por_dia, x='dia', y='Cantidad', labels={'dia': 'Fecha', 'Cantidad': 'Nº de Pedidos'})
+            st.plotly_chart(fig_bar, use_container_width=True)
             
-        with col_calor:
-            st.subheader("Densidad Espacial de la Demanda")
+        with r1_col2:
+            st.markdown("#### 🎯 Cumplimiento de Tiempos (SLA)")
+            fig_sla = px.pie(df[df['estado'] == 'Entregado'], names='cumple_tiempo', hole=0.4, color='cumple_tiempo', color_discrete_map={'A tiempo':'#10B981', 'Atrasado':'#EF4444'})
+            if entregados > 0: st.plotly_chart(fig_sla, use_container_width=True)
+            else: st.info("No hay entregas registradas para analizar tiempos.")
+            
+        st.divider()
+        r2_col1, r2_col2 = st.columns(2)
+        
+        with r2_col1:
+            st.markdown("#### 👥 Perfil Demográfico del Cliente")
+            fig_gen = px.pie(df, names='perfil_cliente', hole=0.4, color_discrete_sequence=px.colors.qualitative.Pastel)
+            st.plotly_chart(fig_gen, use_container_width=True)
+            
+        with r2_col2:
+            st.markdown("#### 📍 Densidad Espacial de la Demanda")
             mapa_calor = folium.Map(location=COORD_CENTRAL, zoom_start=13)
-            coordenadas_calor = [[p['coordenadas'][0], p['coordenadas'][1]] for p in pedidos_todos]
+            coordenadas_calor = [[p['lat'], p['lon']] for _, p in df.iterrows()]
             HeatMap(coordenadas_calor, radius=18, blur=12).add_to(mapa_calor)
             st_folium(mapa_calor, width=500, height=350)
+            
+        # Tabla resumen por periodos
+        st.divider()
+        st.markdown("#### 🗓️ Desglose de Operaciones Históricas")
+        c_mes, c_ano = st.columns(2)
+        with c_mes:
+            st.write("**Entregas Consolidadas por Mes:**")
+            st.dataframe(df[df['estado'] == 'Entregado'].groupby('mes').size().reset_index(name='Pedidos Completados'), use_container_width=True)
+        with c_ano:
+            st.write("**Entregas Consolidadas por Año:**")
+            st.dataframe(df[df['estado'] == 'Entregado'].groupby('año').size().reset_index(name='Pedidos Completados'), use_container_width=True)
