@@ -112,7 +112,7 @@ def resolver_vrp_multivehiculo(coordenadas_tienda, lista_pedidos, num_vehiculos)
     nodos = [{"id": "CENTRAL", "coordenadas": coordenadas_tienda, "cliente": "Central", "direccion": "Matriz Operativa"}] + lista_pedidos
     matriz_tiempos = obtener_matriz_tiempos_reales(nodos)
     
-    if not matriz_tiempos: # Respaldo si OSRM falla
+    if not matriz_tiempos: 
         matriz_tiempos = []
         for i in range(len(nodos)):
             fila = []
@@ -169,7 +169,7 @@ def trazar_ruta_calles(ruta_ordenada):
     
     geometria_completa = [p['coordenadas'] for p in ruta_ordenada]
     dist_km = sum(calcular_distancia_haversine(ruta_ordenada[i]['coordenadas'], ruta_ordenada[i+1]['coordenadas']) for i in range(len(ruta_ordenada)-1))
-    return geometria_completa, dist_km, dist_km * 2 # Tiempo de respaldo burdo
+    return geometria_completa, dist_km, dist_km * 2 
 
 # ==========================================
 # 4. ESTADÍSTICA PREDICTIVA (PERCENTILES P50 / P90)
@@ -196,10 +196,15 @@ def motor_estadistico_ventanas(tiempo_base_minutos, clima_override):
     return eta_p50, eta_p90, estado_trafico, hora_leida
 
 # ==========================================
-# 5. MEMORIA DE SESIÓN
+# 5. MEMORIA DE SESIÓN ROBUSTA
 # ==========================================
 if 'rutas_calculadas' not in st.session_state: st.session_state['rutas_calculadas'] = None
 if 'datos_trazado' not in st.session_state: st.session_state['datos_trazado'] = {}
+
+def limpiar_memoria_rutas():
+    """Limpia de forma segura ambas variables de memoria para evitar KeyError"""
+    st.session_state['rutas_calculadas'] = None
+    st.session_state['datos_trazado'] = {}
 
 # ==========================================
 # 6. ESTRUCTURA FRONTEND (ERP LOGÍSTICO)
@@ -238,7 +243,7 @@ if modulo == "1️⃣ Control de Manifiestos":
                     if coords:
                         id_ped = f"PED-{random.randint(10000, 99999)}"
                         if guardar_pedido_db(id_ped, cliente, direccion, coords[0], coords[1]):
-                            st.session_state['rutas_calculadas'] = None
+                            limpiar_memoria_rutas() # <-- Corrección
                             st.success("Transacción exitosa.")
                             st.rerun()
                     else:
@@ -249,7 +254,6 @@ if modulo == "1️⃣ Control de Manifiestos":
         archivo = st.file_uploader("Formatos aceptados: .csv", type=["csv"])
         if archivo and st.button("Procesar Lote de Datos", type="primary"):
             df = pd.read_csv(archivo)
-            # Limpieza robusta de columnas para evitar fallos si el usuario usa mayúsculas o espacios
             df.columns = df.columns.str.strip().str.lower()
             
             if 'cliente' in df.columns and 'direccion' in df.columns:
@@ -264,7 +268,7 @@ if modulo == "1️⃣ Control de Manifiestos":
                             guardar_pedido_db(id_ped, str(row['cliente']), dir_texto, coords[0], coords[1])
                             exito += 1
                     bar.progress((idx + 1) / len(df))
-                st.session_state['rutas_calculadas'] = None
+                limpiar_memoria_rutas() # <-- Corrección
                 st.success(f"Lote procesado. {exito} registros insertados.")
                 st.rerun()
             else:
@@ -274,19 +278,18 @@ if modulo == "1️⃣ Control de Manifiestos":
     st.subheader("Base de Datos Activa (Interactiva)")
     pedidos_todos = obtener_pedidos_db()
     if pedidos_todos:
-        # Se restaura la interactividad de borrado fácil por cada fila
         for i, p in enumerate(pedidos_todos):
             col_info, col_btn = st.columns([8, 2])
             col_info.markdown(f"📦 **{p['id']}** | 👤 {p['cliente']} | 📍 {p['direccion']} | 🚦 {p['estado']}")
             if col_btn.button("❌ Eliminar", key=f"del_{p['id']}"):
                 borrar_pedido_db(p['id'])
-                st.session_state['rutas_calculadas'] = None
+                limpiar_memoria_rutas() # <-- Corrección
                 st.rerun()
                 
         st.write("")
         if st.button("Depurar Base de Datos Completa (RESET)", type="secondary"):
             purgar_db()
-            st.session_state['rutas_calculadas'] = None
+            limpiar_memoria_rutas() # <-- Corrección
             st.rerun()
     else:
         st.info("La base de datos operativa se encuentra vacía.")
@@ -314,7 +317,6 @@ elif modulo == "2️⃣ Ruteo y Optimización":
                     st.session_state['rutas_calculadas'] = rutas
                     st.session_state['datos_trazado'] = {}
                     
-                    # Trazar las calles reales de OSRM para cada ruta generada
                     for vehiculo, ruta in rutas.items():
                         geom, dist, tiempo = trazar_ruta_calles(ruta)
                         st.session_state['datos_trazado'][vehiculo] = {"geom": geom, "dist": dist, "tiempo": tiempo}
@@ -324,16 +326,20 @@ elif modulo == "2️⃣ Ruteo y Optimización":
                 
                 for i, (vehiculo, ruta) in enumerate(st.session_state['rutas_calculadas'].items()):
                     color_v = colores[i % len(colores)]
-                    datos_v = st.session_state['datos_trazado'][vehiculo]
                     
-                    eta_p50, eta_p90, estado_trafico, hora_leida = motor_estadistico_ventanas(datos_v["tiempo"], ia_clima)
-                    
-                    st.markdown(f"### 🚚 {vehiculo}")
-                    st.write(f"**Distancia:** {round(datos_v['dist'], 1)} km | **Tráfico:** {estado_trafico}")
-                    st.metric(label=f"Ventana de Entrega (P50-P90)", value=f"{eta_p50} - {eta_p90} min")
-                    
-                    # Dibujar las calles reales exactas en el mapa
-                    folium.PolyLine(datos_v["geom"], color=color_v, weight=6, opacity=0.85).add_to(mapa)
+                    # --- PARACAÍDAS DE SEGURIDAD PARA EL ERROR KEYERROR ---
+                    if vehiculo in st.session_state.get('datos_trazado', {}):
+                        datos_v = st.session_state['datos_trazado'][vehiculo]
+                        
+                        eta_p50, eta_p90, estado_trafico, hora_leida = motor_estadistico_ventanas(datos_v["tiempo"], ia_clima)
+                        
+                        st.markdown(f"### 🚚 {vehiculo}")
+                        st.write(f"**Distancia:** {round(datos_v['dist'], 1)} km | **Tráfico:** {estado_trafico}")
+                        st.metric(label=f"Ventana de Entrega (P50-P90)", value=f"{eta_p50} - {eta_p90} min")
+                        
+                        folium.PolyLine(datos_v["geom"], color=color_v, weight=6, opacity=0.85).add_to(mapa)
+                    else:
+                        st.warning(f"⚠️ Datos en proceso para {vehiculo}. Por favor, vuelve a presionar 'Generar Ruteo Inteligente'.")
 
     with col_mapa:
         for p in pedidos_pendientes:
@@ -358,7 +364,7 @@ elif modulo == "3️⃣ Portal Conductor (Terreno)":
                 if foto:
                     if st.button("✅ Confirmar Entrega", key=f"btn_{p['id']}", type="primary", use_container_width=True):
                         actualizar_estado_db(p['id'], "Entregado")
-                        st.session_state['rutas_calculadas'] = None
+                        limpiar_memoria_rutas() # <-- Corrección
                         st.success("Información transmitida a la Central.")
                         st.rerun()
 
