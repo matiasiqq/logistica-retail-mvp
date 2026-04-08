@@ -211,7 +211,7 @@ if seccion == "Cargar Pedidos":
             df_cargado = pd.read_csv(archivo_subido)
             st.dataframe(df_cargado.head(3))
             
-            if st.button("🚀 Procesar Archivo Masivo"):
+            if st.button("Procesar Archivo Masivo"):
                 with st.spinner("Procesando satelitalmente las direcciones... esto tomará unos segundos."):
                     agregados = 0
                     for index, row in df_cargado.iterrows():
@@ -255,8 +255,8 @@ if seccion == "Cargar Pedidos":
 # ------------------------------------------
 # SECCIÓN 2: MAPA Y RUTEO (CALLES REALES)
 # ------------------------------------------
-elif seccion == "🧠 Rutas e IA Predictiva":
-    st.title("🧠 Optiaflux: Ruteo Dinámico Compartido")
+elif seccion == "Rutas e IA Predictiva":
+    st.title("Optiaflux: Ruteo Dinámico Compartido")
     col_datos, col_mapa = st.columns([1, 2])
     
     mapa_optiaflux = folium.Map(location=coord_tienda, zoom_start=14)
@@ -266,7 +266,7 @@ elif seccion == "🧠 Rutas e IA Predictiva":
         folium.Marker(paso['coordenadas'], popup=f"{paso['id']} - {paso['cliente']}", icon=folium.Icon(color="red", icon="info-sign")).add_to(mapa_optiaflux)
 
     with col_datos:
-        st.markdown("### ⚙️ Centro de Comando")
+        st.markdown("### Centro de Comando")
         if len(pedidos_globales) == 0:
             st.info(" Ingresa pedidos para activar el algoritmo.")
         else:
