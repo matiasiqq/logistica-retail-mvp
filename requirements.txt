@@ -6,3 +6,4 @@ geopy
 pytz
 requests
 ortools
+plotly
