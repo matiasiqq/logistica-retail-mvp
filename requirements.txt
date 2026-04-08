@@ -4,3 +4,4 @@ streamlit-folium
 pandas
 geopy
 pytz
+requests
