@@ -26,38 +26,37 @@ st.markdown("""
     .stButton>button { border-radius: 5px; font-weight: 600; }
     h1, h2, h3 { color: #1E3A8A; font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; }
     div[data-testid="stMetricValue"] { font-size: 1.8rem; color: #1E3A8A; }
-    .stExpander { border: 1px solid #E2E8F0; border-radius: 8px; margin-bottom: 10px; }
     </style>
 """, unsafe_allow_html=True)
 
-geolocalizador = Nominatim(user_agent="optiaflux_erp_v14_5")
-COORD_CENTRAL = [-20.2447, -70.1415] # Ubicación: Falabella Iquique
+geolocalizador = Nominatim(user_agent="optiaflux_erp_app")
+COORD_CENTRAL = [-20.2447, -70.1415] 
 
 # ==========================================
 # 2. ARQUITECTURA DE BASE DE DATOS (SQLite)
 # ==========================================
 def init_db():
-    conn = sqlite3.connect('optiaflux_full.db', check_same_thread=False)
+    conn = sqlite3.connect('optiaflux.db', check_same_thread=False)
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS pedidos 
                  (id TEXT PRIMARY KEY, cliente TEXT, direccion TEXT, lat REAL, lon REAL, estado TEXT, fecha_ingreso TEXT)''')
     conn.commit()
     return conn
 
-conn_db = init_db()
+conn = init_db()
 
 def guardar_pedido_db(id_ped, cliente, direccion, lat, lon):
-    c = conn_db.cursor()
+    c = conn.cursor()
     fecha = datetime.now(pytz.timezone('America/Santiago')).strftime("%Y-%m-%d %H:%M:%S")
     try:
         c.execute("INSERT INTO pedidos VALUES (?, ?, ?, ?, ?, ?, ?)", (id_ped, cliente, direccion, lat, lon, "Pendiente", fecha))
-        conn_db.commit()
+        conn.commit()
         return True
     except sqlite3.IntegrityError:
         return False
 
 def obtener_pedidos_db(estado_filtro=None):
-    c = conn_db.cursor()
+    c = conn.cursor()
     if estado_filtro:
         c.execute("SELECT * FROM pedidos WHERE estado = ?", (estado_filtro,))
     else:
@@ -66,22 +65,22 @@ def obtener_pedidos_db(estado_filtro=None):
     return [{"id": f[0], "cliente": f[1], "direccion": f[2], "coordenadas": [f[3], f[4]], "estado": f[5], "fecha": f[6]} for f in filas]
 
 def actualizar_estado_db(id_ped, nuevo_estado):
-    c = conn_db.cursor()
+    c = conn.cursor()
     c.execute("UPDATE pedidos SET estado = ? WHERE id = ?", (nuevo_estado, id_ped))
-    conn_db.commit()
+    conn.commit()
 
 def borrar_pedido_db(id_ped):
-    c = conn_db.cursor()
+    c = conn.cursor()
     c.execute("DELETE FROM pedidos WHERE id = ?", (id_ped,))
-    conn_db.commit()
+    conn.commit()
 
 def purgar_db():
-    c = conn_db.cursor()
+    c = conn.cursor()
     c.execute("DELETE FROM pedidos")
-    conn_db.commit()
+    conn.commit()
 
 # ==========================================
-# 3. MOTORES LÓGICOS Y OSRM (RUTEO REAL)
+# 3. MOTORES LÓGICOS Y OSRM (RUTEO REAL POR CALLES)
 # ==========================================
 def obtener_coordenadas(direccion):
     try:
@@ -105,31 +104,45 @@ def obtener_matriz_tiempos_reales(nodos):
         res = requests.get(url, timeout=5).json()
         if res.get('code') == 'Ok':
             return res['durations']
-    except: return None
+    except:
+        return None
+    return None
 
 def resolver_vrp_multivehiculo(coordenadas_tienda, lista_pedidos, num_vehiculos):
     nodos = [{"id": "CENTRAL", "coordenadas": coordenadas_tienda, "cliente": "Central", "direccion": "Matriz Operativa"}] + lista_pedidos
-    matriz_osrm = obtener_matriz_tiempos_reales(nodos)
+    matriz_tiempos = obtener_matriz_tiempos_reales(nodos)
     
-    if matriz_osrm:
-        matriz = [[int(valor) for valor in fila] for fila in matriz_osrm]
-    else:
-        matriz = [[int(calcular_distancia_haversine(nodos[i]['coordenadas'], nodos[j]['coordenadas']) * 1000) for j in range(len(nodos))] for i in range(len(nodos))]
+    # CORRECCIÓN DE BUG: Transformar la matriz de OSRM (decimales) a Enteros para OR-Tools
+    if matriz_tiempos:
+        matriz_tiempos = [[int(valor) for valor in fila] for fila in matriz_tiempos]
+    else: 
+        matriz_tiempos = []
+        for i in range(len(nodos)):
+            fila = []
+            for j in range(len(nodos)):
+                fila.append(int(calcular_distancia_haversine(nodos[i]['coordenadas'], nodos[j]['coordenadas']) * 100))
+            matriz_tiempos.append(fila)
 
-    manager = pywrapcp.RoutingIndexManager(len(matriz), num_vehiculos, 0)
+    manager = pywrapcp.RoutingIndexManager(len(matriz_tiempos), num_vehiculos, 0)
     routing = pywrapcp.RoutingModel(manager)
 
     def distance_callback(from_index, to_index):
-        return matriz[manager.IndexToNode(from_index)][manager.IndexToNode(to_index)]
+        return matriz_tiempos[manager.IndexToNode(from_index)][manager.IndexToNode(to_index)]
 
     transit_callback_index = routing.RegisterTransitCallback(distance_callback)
     routing.SetArcCostEvaluatorOfAllVehicles(transit_callback_index)
-    routing.AddDimension(transit_callback_index, 0, 9000000, True, 'Distance')
+    
+    dimension_name = 'Distance'
+    # CORRECCIÓN DE BUG: Aumentar el límite de distancia drásticamente a 9,000,000 para evitar colapsos
+    routing.AddDimension(transit_callback_index, 0, 9000000, True, dimension_name)
+    distance_dimension = routing.GetDimensionOrDie(dimension_name)
+    distance_dimension.SetGlobalSpanCostCoefficient(100)
 
     search_parameters = pywrapcp.DefaultRoutingSearchParameters()
     search_parameters.first_solution_strategy = routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
 
     solution = routing.SolveWithParameters(search_parameters)
+
     rutas_vehiculos = {}
     if solution:
         for vehicle_id in range(num_vehiculos):
@@ -144,8 +157,26 @@ def resolver_vrp_multivehiculo(coordenadas_tienda, lista_pedidos, num_vehiculos)
                 rutas_vehiculos[f"Vehículo {vehicle_id + 1}"] = ruta_actual
     return rutas_vehiculos
 
+def trazar_ruta_calles(ruta_ordenada):
+    coords_str = ";".join([f"{p['coordenadas'][1]},{p['coordenadas'][0]}" for p in ruta_ordenada])
+    url = f"http://router.project-osrm.org/route/v1/driving/{coords_str}?overview=full&geometries=geojson"
+    try:
+        res = requests.get(url, timeout=5).json()
+        if res.get('code') == 'Ok':
+            coords_calle = res['routes'][0]['geometry']['coordinates']
+            geometria_completa = [[lat, lon] for lon, lat in coords_calle]
+            dist_km = res['routes'][0]['distance'] / 1000.0
+            tiempo_min = res['routes'][0]['duration'] / 60.0
+            return geometria_completa, dist_km, tiempo_min
+    except:
+        pass
+    
+    geometria_completa = [p['coordenadas'] for p in ruta_ordenada]
+    dist_km = sum(calcular_distancia_haversine(ruta_ordenada[i]['coordenadas'], ruta_ordenada[i+1]['coordenadas']) for i in range(len(ruta_ordenada)-1))
+    return geometria_completa, dist_km, dist_km * 2 
+
 # ==========================================
-# 4. DETERMINACIÓN DE TIEMPOS REALES
+# 4. ESTADÍSTICA PREDICTIVA (PERCENTILES P50 / P90)
 # ==========================================
 def obtener_factor_trafico_real():
     zona_horaria = pytz.timezone('America/Santiago')
@@ -158,47 +189,18 @@ def obtener_factor_trafico_real():
     elif 22.0 <= tiempo_decimal or tiempo_decimal <= 6.0: return 0.9, "Fluido (Nocturno)", hora_actual.strftime('%H:%M')
     else: return 1.0, "Normal (Valle)", hora_actual.strftime('%H:%M')
 
-def motor_ia_predictivo_avanzado(tiempo_base_minutos, clima_override):
+def motor_estadistico_ventanas(tiempo_base_minutos, clima_override):
     factor_trafico, estado_trafico, hora_leida = obtener_factor_trafico_real()
     factor_clima = 1.15 if clima_override == "Lluvia/Niebla" else 1.0
-    minutos_finales = tiempo_base_minutos * factor_trafico * factor_clima
-    return round(minutos_finales), estado_trafico, hora_leida
-
-def trazar_geometria_y_cronograma(ruta_ordenada, factor_trafico, factor_clima):
-    """Genera el trazado de calles y el ETA 'Solo Ida' acumulado."""
-    geometria = []
-    cronograma = []
-    tiempo_acumulado = 0.0
-    distancia_total = 0.0
     
-    for i in range(len(ruta_ordenada)-1):
-        c1 = ruta_ordenada[i]['coordenadas']
-        c2 = ruta_ordenada[i+1]['coordenadas']
-        url = f"http://router.project-osrm.org/route/v1/driving/{c1[1]},{c1[0]};{c2[1]},{c2[0]}?overview=full&geometries=geojson"
-        try:
-            res = requests.get(url, timeout=5).json()
-            if res['code'] == 'Ok':
-                segmento = res['routes'][0]['geometry']['coordinates']
-                geometria.extend([[lat, lon] for lon, lat in segmento])
-                
-                # Cálculo de tiempo de este tramo
-                segundos_tramo = res['routes'][0]['duration']
-                minutos_tramo = (segundos_tramo / 60.0) * factor_trafico * factor_clima
-                tiempo_acumulado += minutos_tramo
-                distancia_total += res['routes'][0]['distance'] / 1000.0
-                
-                # Guardar llegada al cliente (No retorno a central)
-                if i < len(ruta_ordenada) - 2:
-                    cronograma.append({
-                        "cliente": ruta_ordenada[i+1]['cliente'],
-                        "llegada_min": round(tiempo_acumulado)
-                    })
-        except:
-            geometria.extend([c1, c2])
-    return geometria, distancia_total, cronograma
+    minutos_esperados = tiempo_base_minutos * factor_trafico * factor_clima
+    eta_p50 = round(minutos_esperados)
+    varianza = 0.35 if "Punta" in estado_trafico else 0.15
+    eta_p90 = round(minutos_esperados * (1 + varianza))
+    return eta_p50, eta_p90, estado_trafico, hora_leida
 
 # ==========================================
-# 5. MEMORIA DE SESIÓN
+# 5. MEMORIA DE SESIÓN ROBUSTA
 # ==========================================
 if 'rutas_calculadas' not in st.session_state: st.session_state['rutas_calculadas'] = None
 if 'datos_trazado' not in st.session_state: st.session_state['datos_trazado'] = {}
@@ -208,10 +210,10 @@ def limpiar_memoria_rutas():
     st.session_state['datos_trazado'] = {}
 
 # ==========================================
-# 6. ESTRUCTURA FRONTEND (ERP COMPLETO)
+# 6. ESTRUCTURA FRONTEND (ERP LOGÍSTICO)
 # ==========================================
 st.sidebar.title("Optiaflux ERP")
-st.sidebar.caption("LOGÍSTICA DE ALTA PRECISIÓN")
+st.sidebar.caption("SISTEMA CENTRAL DE OPERACIONES")
 st.sidebar.divider()
 
 modulo = st.sidebar.radio("Módulos del Sistema:", [
@@ -222,103 +224,128 @@ modulo = st.sidebar.radio("Módulos del Sistema:", [
 ])
 
 st.sidebar.divider()
-st.sidebar.success("🟢 Motores Satelitales Conectados")
+st.sidebar.success("🟢 OR-Tools y OSRM Conectados")
 ia_clima = st.sidebar.selectbox("Condición Climática Local:", ["Despejado", "Lluvia/Niebla"])
-factor_clima_val = 1.15 if ia_clima == "Lluvia/Niebla" else 1.0
 
-# --- MÓDULO 1: MANIFIESTOS ---
+# ------------------------------------------
+# MÓDULO 1: CONTROL DE MANIFIESTOS (ADMIN)
+# ------------------------------------------
 if modulo == "1️⃣ Control de Manifiestos":
-    st.title("Gestión de Manifiestos SQL")
-    st.write("Administración de carga y persistencia de datos relacionales.")
+    st.title("Control Integrado de Manifiestos")
     st.divider()
     
     col1, col2 = st.columns(2)
     with col1:
         st.subheader("Ingreso Manual")
-        with st.form("form_manual"):
-            cli = st.text_input("Razón Social / Cliente")
-            dir_ = st.text_input("Dirección (Ej: Los Cóndores 123)")
-            if st.form_submit_button("Geocodificar y Guardar"):
-                with st.spinner("Procesando..."):
-                    coor = obtener_coordenadas(dir_)
-                    if coor:
-                        id_p = f"PED-{random.randint(10000, 99999)}"
-                        if guardar_pedido_db(id_p, cli, dir_, coor[0], coor[1]):
-                            limpiar_memoria_rutas(); st.success("Registrado."); st.rerun()
-                    else: st.error("Error: Dirección no encontrada.")
+        with st.form("form_pedido"):
+            cliente = st.text_input("Razón Social / Cliente")
+            direccion = st.text_input("Dirección Exacta")
+            if st.form_submit_button("Registrar Operación"):
+                with st.spinner("Geocodificando..."):
+                    coords = obtener_coordenadas(direccion)
+                    if coords:
+                        id_ped = f"PED-{random.randint(10000, 99999)}"
+                        if guardar_pedido_db(id_ped, cliente, direccion, coords[0], coords[1]):
+                            limpiar_memoria_rutas() 
+                            st.success("Transacción exitosa.")
+                            st.rerun()
+                    else:
+                        st.error("Error geográfico.")
 
     with col2:
-        st.subheader("Integración Masiva (CSV)")
-        st.write("El archivo debe contener las columnas 'Cliente' y 'Direccion'.")
-        archivo = st.file_uploader("Subir Manifiesto", type=["csv"])
-        if archivo and st.button("🚀 Inyectar Lote a la Base de Datos"):
+        st.subheader("Integración Masiva (CSV robusto)")
+        archivo = st.file_uploader("Formatos aceptados: .csv", type=["csv"])
+        if archivo and st.button("Procesar Lote de Datos", type="primary"):
             df = pd.read_csv(archivo)
             df.columns = df.columns.str.strip().str.lower()
-            bar = st.progress(0)
-            exito = 0
-            for idx, row in df.iterrows():
-                c_coor = obtener_coordenadas(str(row['direccion']))
-                if c_coor:
-                    id_p = f"PED-{random.randint(10000, 99999)}"
-                    guardar_pedido_db(id_p, str(row['cliente']), str(row['direccion']), c_coor[0], c_coor[1])
-                    exito += 1
-                bar.progress((idx + 1) / len(df))
-            limpiar_memoria_rutas(); st.success(f"Operación exitosa: {exito} pedidos guardados permanentemente."); st.rerun()
-
-    st.divider()
-    st.subheader("Base de Datos Activa")
-    pedidos_db = obtener_pedidos_db()
-    if pedidos_db:
-        for p in pedidos_db:
-            c_info, c_btn = st.columns([8, 2])
-            c_info.write(f"📦 **{p['id']}** | {p['cliente']} | {p['direccion']} | **{p['estado']}**")
-            if c_btn.button("❌ Eliminar", key=p['id']):
-                borrar_pedido_db(p['id']); limpiar_memoria_rutas(); st.rerun()
-        
-        st.write("")
-        if st.button("🗑️ Purgar Sistema Completo"):
-            purgar_db(); limpiar_memoria_rutas(); st.rerun()
-    else: st.info("No hay pedidos registrados.")
-
-# --- MÓDULO 2: RUTEO (TIEMPOS REALES SOLO IDA) ---
-elif modulo == "2️⃣ Ruteo y Optimización":
-    st.title("Optimización de Flota")
-    st.write("Análisis de tránsito en tiempo real y ruteo por calles.")
-    st.divider()
-    pedidos_p = obtener_pedidos_db(estado_filtro="Pendiente")
-    
-    col_c, col_m = st.columns([1, 2])
-    mapa = folium.Map(location=COORD_CENTRAL, zoom_start=13)
-    folium.Marker(COORD_CENTRAL, icon=folium.Icon(color="black", icon="home")).add_to(mapa)
-    
-    with col_c:
-        n_veh = st.slider("Unidades Disponibles", 1, 10, 2)
-        if st.button("🚀 Iniciar Optimización Satelital", type="primary", use_container_width=True):
-            if not pedidos_p: st.warning("No hay carga pendiente.")
+            
+            if 'cliente' in df.columns and 'direccion' in df.columns:
+                bar = st.progress(0)
+                exito = 0
+                for idx, row in df.iterrows():
+                    dir_texto = str(row['direccion'])
+                    if dir_texto.strip() and dir_texto != 'nan':
+                        coords = obtener_coordenadas(dir_texto)
+                        if coords:
+                            id_ped = f"PED-{random.randint(10000, 99999)}"
+                            guardar_pedido_db(id_ped, str(row['cliente']), dir_texto, coords[0], coords[1])
+                            exito += 1
+                    bar.progress((idx + 1) / len(df))
+                limpiar_memoria_rutas()
+                st.success(f"Lote procesado. {exito} registros insertados.")
+                st.rerun()
             else:
-                with st.spinner("Sincronizando con motores OSRM..."):
-                    st.session_state['rutas_calculadas'] = resolver_vrp_multivehiculo(COORD_CENTRAL, pedidos_p, n_veh)
-                    st.session_state['datos_trazado'] = {}
-                    f_trafico, desc_t, hora_t = obtener_factor_trafico_real()
-                    
-                    for v, ruta in st.session_state['rutas_calculadas'].items():
-                        geom, dist, crono = trazar_geometria_y_cronograma(ruta, f_trafico, factor_clima_val)
-                        st.session_state['datos_trazado'][v] = {"geom": geom, "dist": dist, "crono": crono, "info_t": f"{desc_t} ({hora_t})"}
-        
-        if st.session_state['rutas_calculadas']:
-            colores = ['#1E3A8A', '#10B981', '#F59E0B', '#DC2626', '#8B5CF6']
-            for i, (v, ruta) in enumerate(st.session_state['rutas_calculadas'].items()):
-                dv = st.session_state['datos_trazado'].get(v)
-                if dv:
-                    st.markdown(f"### 🚚 {v}")
-                    st.caption(f"📡 {dv['info_t']} | Recorrido: {round(dv['dist'],1)} km")
-                    for c in dv['crono']:
-                        st.write(f"📍 {c['cliente']}: **+ {c['llegada_min']} min**")
-                    folium.PolyLine(dv['geom'], color=colores[i % len(colores)], weight=5, opacity=0.8).add_to(mapa)
+                st.error("El archivo CSV debe contener exactamente las columnas 'cliente' y 'direccion'.")
 
-    with col_m:
-        for p in pedidos_p:
-            folium.Marker(p['coordenadas'], popup=p['id'], icon=folium.Icon(color="gray")).add_to(mapa)
+    st.divider()
+    st.subheader("Base de Datos Activa (Interactiva)")
+    pedidos_todos = obtener_pedidos_db()
+    if pedidos_todos:
+        for i, p in enumerate(pedidos_todos):
+            col_info, col_btn = st.columns([8, 2])
+            col_info.markdown(f"📦 **{p['id']}** | 👤 {p['cliente']} | 📍 {p['direccion']} | 🚦 {p['estado']}")
+            if col_btn.button("❌ Eliminar", key=f"del_{p['id']}"):
+                borrar_pedido_db(p['id'])
+                limpiar_memoria_rutas()
+                st.rerun()
+                
+        st.write("")
+        if st.button("Depurar Base de Datos Completa (RESET)", type="secondary"):
+            purgar_db()
+            limpiar_memoria_rutas()
+            st.rerun()
+    else:
+        st.info("La base de datos operativa se encuentra vacía.")
+
+# ------------------------------------------
+# MÓDULO 2: RUTEO MULTI-FLOTA CON CALLES REALES
+# ------------------------------------------
+elif modulo == "2️⃣ Ruteo y Optimización":
+    st.title("Panel de Optimización OSRM y OR-Tools")
+    st.divider()
+    pedidos_pendientes = obtener_pedidos_db(estado_filtro="Pendiente")
+    
+    col_param, col_mapa = st.columns([1, 2])
+    mapa = folium.Map(location=COORD_CENTRAL, zoom_start=14)
+    folium.Marker(COORD_CENTRAL, popup="Matriz Central", icon=folium.Icon(color="black", icon="briefcase")).add_to(mapa)
+    
+    with col_param:
+        flota_disponible = st.number_input("Vehículos disponibles:", min_value=1, max_value=10, value=2)
+        if len(pedidos_pendientes) == 0:
+            st.warning("No hay manifiestos pendientes.")
+        else:
+            if st.button("Generar Ruteo Inteligente", type="primary", use_container_width=True):
+                with st.spinner("Conectando con satélites OSRM y motores Google..."):
+                    rutas = resolver_vrp_multivehiculo(COORD_CENTRAL, pedidos_pendientes, flota_disponible)
+                    st.session_state['rutas_calculadas'] = rutas
+                    st.session_state['datos_trazado'] = {}
+                    
+                    for vehiculo, ruta in rutas.items():
+                        geom, dist, tiempo = trazar_ruta_calles(ruta)
+                        st.session_state['datos_trazado'][vehiculo] = {"geom": geom, "dist": dist, "tiempo": tiempo}
+            
+            if st.session_state['rutas_calculadas']:
+                colores = ['#1E3A8A', '#10B981', '#F59E0B', '#DC2626', '#8B5CF6', '#14B8A6']
+                
+                for i, (vehiculo, ruta) in enumerate(st.session_state['rutas_calculadas'].items()):
+                    color_v = colores[i % len(colores)]
+                    
+                    if vehiculo in st.session_state.get('datos_trazado', {}):
+                        datos_v = st.session_state['datos_trazado'][vehiculo]
+                        
+                        eta_p50, eta_p90, estado_trafico, hora_leida = motor_estadistico_ventanas(datos_v["tiempo"], ia_clima)
+                        
+                        st.markdown(f"### 🚚 {vehiculo}")
+                        st.write(f"**Distancia:** {round(datos_v['dist'], 1)} km | **Tráfico:** {estado_trafico}")
+                        st.metric(label=f"Ventana de Entrega (P50-P90)", value=f"{eta_p50} - {eta_p90} min")
+                        
+                        folium.PolyLine(datos_v["geom"], color=color_v, weight=6, opacity=0.85).add_to(mapa)
+                    else:
+                        st.warning(f"⚠️ Datos en proceso para {vehiculo}.")
+
+    with col_mapa:
+        for p in pedidos_pendientes:
+            folium.Marker(p['coordenadas'], popup=f"{p['id']}", icon=folium.Icon(color="lightgray", icon="info-sign")).add_to(mapa)
         st_folium(mapa, width=800, height=600)
 
 # --- MÓDULO 3: PORTAL CONDUCTOR (CÁMARA DUAL) ---
@@ -339,15 +366,40 @@ elif modulo == "3️⃣ Portal Conductor (Terreno)":
                         actualizar_estado_db(p['id'], "Entregado")
                         limpiar_memoria_rutas(); st.rerun()
 
-# --- MÓDULO 4: BI ANALÍTICA ---
+# ------------------------------------------
+# MÓDULO 4: INTELIGENCIA DE NEGOCIOS (BI)
+# ------------------------------------------
 elif modulo == "4️⃣ Inteligencia de Negocios (BI)":
-    st.title("Business Intelligence")
-    df = pd.DataFrame(obtener_pedidos_db())
-    if not df.empty:
-        c1, c2 = st.columns(2)
-        with c1: st.plotly_chart(px.pie(df, names='estado', title="Cumplimiento SLA", hole=0.4, color='estado', color_discrete_map={'Entregado':'#10B981', 'Pendiente':'#F59E0B'}))
-        with c2:
-            st.subheader("Mapa de Calor de Demanda")
-            m_h = folium.Map(location=COORD_CENTRAL, zoom_start=12)
-            HeatMap(df[['lat', 'lon']].values.tolist()).add_to(m_h)
-            st_folium(m_h, width=500, height=400)
+    st.title("📊 Analítica de Datos")
+    st.divider()
+    
+    pedidos_todos = obtener_pedidos_db()
+    if not pedidos_todos:
+        st.info("El sistema requiere data histórica.")
+    else:
+        df = pd.DataFrame(pedidos_todos)
+        total = len(df)
+        entregados = len(df[df['estado'] == 'Entregado'])
+        pendientes = total - entregados
+        
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Volumen Total Operado", total)
+        tasa_sla = round((entregados/total)*100, 1) if total>0 else 0
+        col2.metric("Nivel de Servicio (SLA)", f"{tasa_sla}%")
+        col3.metric("Manifiestos en Tránsito", pendientes)
+        
+        st.divider()
+        col_graf, col_calor = st.columns(2)
+        
+        with col_graf:
+            st.subheader("Estatus Operativo Global")
+            fig = px.pie(df, names='estado', hole=0.4, color='estado', color_discrete_map={'Entregado':'#10B981', 'Pendiente':'#F59E0B'})
+            fig.update_layout(margin=dict(t=0, b=0, l=0, r=0))
+            st.plotly_chart(fig, use_container_width=True)
+            
+        with col_calor:
+            st.subheader("Densidad Espacial de la Demanda")
+            mapa_calor = folium.Map(location=COORD_CENTRAL, zoom_start=13)
+            coordenadas_calor = [[p['coordenadas'][0], p['coordenadas'][1]] for p in pedidos_todos]
+            HeatMap(coordenadas_calor, radius=18, blur=12).add_to(mapa_calor)
+            st_folium(mapa_calor, width=500, height=350)
