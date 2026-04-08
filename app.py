@@ -306,3 +306,62 @@ elif seccion == "🧠 Rutas e IA Predictiva":
 
     with col_mapa:
         st_folium(mapa_optiaflux, width=800, height=500)
+# ------------------------------------------
+# MÓDULO 3: PORTAL CONDUCTOR (TERRENO)
+# ------------------------------------------
+elif modulo == "3️⃣ Portal Conductor (Terreno)":
+    st.markdown("<h2 style='text-align: center; color: #1E3A8A;'>📱 Portal Operador Terreno</h2>", unsafe_allow_html=True)
+    st.divider()
+    
+    pedidos_pendientes = obtener_pedidos_db(estado_filtro="Pendiente")
+    if not pedidos_pendientes:
+        st.success("🎉 Ruta completada.")
+    else:
+        for p in pedidos_pendientes:
+            with st.expander(f"📍 {p['direccion']} | {p['cliente']}"):
+                st.write(f"**ID:** {p['id']}")
+                foto = st.camera_input("Capturar evidencia fotográfica", key=f"cam_{p['id']}")
+                if foto:
+                    if st.button("✅ Confirmar Entrega", key=f"btn_{p['id']}", type="primary", use_container_width=True):
+                        actualizar_estado_db(p['id'], "Entregado")
+                        limpiar_memoria_rutas() 
+                        st.success("Información transmitida a la Central.")
+                        st.rerun()
+
+# ------------------------------------------
+# MÓDULO 4: INTELIGENCIA DE NEGOCIOS (BI)
+# ------------------------------------------
+elif modulo == "4️⃣ Inteligencia de Negocios (BI)":
+    st.title("📊 Analítica de Datos")
+    st.divider()
+    
+    pedidos_todos = obtener_pedidos_db()
+    if not pedidos_todos:
+        st.info("El sistema requiere data histórica.")
+    else:
+        df = pd.DataFrame(pedidos_todos)
+        total = len(df)
+        entregados = len(df[df['estado'] == 'Entregado'])
+        pendientes = total - entregados
+        
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Volumen Total Operado", total)
+        tasa_sla = round((entregados/total)*100, 1) if total>0 else 0
+        col2.metric("Nivel de Servicio (SLA)", f"{tasa_sla}%")
+        col3.metric("Manifiestos en Tránsito", pendientes)
+        
+        st.divider()
+        col_graf, col_calor = st.columns(2)
+        
+        with col_graf:
+            st.subheader("Estatus Operativo Global")
+            fig = px.pie(df, names='estado', hole=0.4, color='estado', color_discrete_map={'Entregado':'#10B981', 'Pendiente':'#F59E0B'})
+            fig.update_layout(margin=dict(t=0, b=0, l=0, r=0))
+            st.plotly_chart(fig, use_container_width=True)
+            
+        with col_calor:
+            st.subheader("Densidad Espacial de la Demanda")
+            mapa_calor = folium.Map(location=COORD_CENTRAL, zoom_start=13)
+            coordenadas_calor = [[p['coordenadas'][0], p['coordenadas'][1]] for p in pedidos_todos]
+            HeatMap(coordenadas_calor, radius=18, blur=12).add_to(mapa_calor)
+            st_folium(mapa_calor, width=500, height=350)
