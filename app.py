@@ -112,7 +112,10 @@ def resolver_vrp_multivehiculo(coordenadas_tienda, lista_pedidos, num_vehiculos)
     nodos = [{"id": "CENTRAL", "coordenadas": coordenadas_tienda, "cliente": "Central", "direccion": "Matriz Operativa"}] + lista_pedidos
     matriz_tiempos = obtener_matriz_tiempos_reales(nodos)
     
-    if not matriz_tiempos: 
+    # CORRECCIÓN DE BUG: Transformar la matriz de OSRM (decimales) a Enteros para OR-Tools
+    if matriz_tiempos:
+        matriz_tiempos = [[int(valor) for valor in fila] for fila in matriz_tiempos]
+    else: 
         matriz_tiempos = []
         for i in range(len(nodos)):
             fila = []
@@ -130,7 +133,8 @@ def resolver_vrp_multivehiculo(coordenadas_tienda, lista_pedidos, num_vehiculos)
     routing.SetArcCostEvaluatorOfAllVehicles(transit_callback_index)
     
     dimension_name = 'Distance'
-    routing.AddDimension(transit_callback_index, 0, 300000, True, dimension_name)
+    # CORRECCIÓN DE BUG: Aumentar el límite de distancia drásticamente a 9,000,000 para evitar colapsos
+    routing.AddDimension(transit_callback_index, 0, 9000000, True, dimension_name)
     distance_dimension = routing.GetDimensionOrDie(dimension_name)
     distance_dimension.SetGlobalSpanCostCoefficient(100)
 
@@ -202,7 +206,6 @@ if 'rutas_calculadas' not in st.session_state: st.session_state['rutas_calculada
 if 'datos_trazado' not in st.session_state: st.session_state['datos_trazado'] = {}
 
 def limpiar_memoria_rutas():
-    """Limpia de forma segura ambas variables de memoria para evitar KeyError"""
     st.session_state['rutas_calculadas'] = None
     st.session_state['datos_trazado'] = {}
 
@@ -243,7 +246,7 @@ if modulo == "1️⃣ Control de Manifiestos":
                     if coords:
                         id_ped = f"PED-{random.randint(10000, 99999)}"
                         if guardar_pedido_db(id_ped, cliente, direccion, coords[0], coords[1]):
-                            limpiar_memoria_rutas() # <-- Corrección
+                            limpiar_memoria_rutas() 
                             st.success("Transacción exitosa.")
                             st.rerun()
                     else:
@@ -268,7 +271,7 @@ if modulo == "1️⃣ Control de Manifiestos":
                             guardar_pedido_db(id_ped, str(row['cliente']), dir_texto, coords[0], coords[1])
                             exito += 1
                     bar.progress((idx + 1) / len(df))
-                limpiar_memoria_rutas() # <-- Corrección
+                limpiar_memoria_rutas()
                 st.success(f"Lote procesado. {exito} registros insertados.")
                 st.rerun()
             else:
@@ -283,13 +286,13 @@ if modulo == "1️⃣ Control de Manifiestos":
             col_info.markdown(f"📦 **{p['id']}** | 👤 {p['cliente']} | 📍 {p['direccion']} | 🚦 {p['estado']}")
             if col_btn.button("❌ Eliminar", key=f"del_{p['id']}"):
                 borrar_pedido_db(p['id'])
-                limpiar_memoria_rutas() # <-- Corrección
+                limpiar_memoria_rutas()
                 st.rerun()
                 
         st.write("")
         if st.button("Depurar Base de Datos Completa (RESET)", type="secondary"):
             purgar_db()
-            limpiar_memoria_rutas() # <-- Corrección
+            limpiar_memoria_rutas()
             st.rerun()
     else:
         st.info("La base de datos operativa se encuentra vacía.")
@@ -327,7 +330,6 @@ elif modulo == "2️⃣ Ruteo y Optimización":
                 for i, (vehiculo, ruta) in enumerate(st.session_state['rutas_calculadas'].items()):
                     color_v = colores[i % len(colores)]
                     
-                    # --- PARACAÍDAS DE SEGURIDAD PARA EL ERROR KEYERROR ---
                     if vehiculo in st.session_state.get('datos_trazado', {}):
                         datos_v = st.session_state['datos_trazado'][vehiculo]
                         
@@ -339,7 +341,7 @@ elif modulo == "2️⃣ Ruteo y Optimización":
                         
                         folium.PolyLine(datos_v["geom"], color=color_v, weight=6, opacity=0.85).add_to(mapa)
                     else:
-                        st.warning(f"⚠️ Datos en proceso para {vehiculo}. Por favor, vuelve a presionar 'Generar Ruteo Inteligente'.")
+                        st.warning(f"⚠️ Datos en proceso para {vehiculo}.")
 
     with col_mapa:
         for p in pedidos_pendientes:
@@ -364,7 +366,7 @@ elif modulo == "3️⃣ Portal Conductor (Terreno)":
                 if foto:
                     if st.button("✅ Confirmar Entrega", key=f"btn_{p['id']}", type="primary", use_container_width=True):
                         actualizar_estado_db(p['id'], "Entregado")
-                        limpiar_memoria_rutas() # <-- Corrección
+                        limpiar_memoria_rutas() 
                         st.success("Información transmitida a la Central.")
                         st.rerun()
 
