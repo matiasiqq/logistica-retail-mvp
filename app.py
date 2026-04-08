@@ -40,11 +40,9 @@ COORD_CENTRAL = [-20.2447, -70.1415]
 def init_db():
     conn = sqlite3.connect('optiaflux.db', check_same_thread=False)
     c = conn.cursor()
-    # Se agrega la columna 'foto' para almacenar la imagen en formato Base64
     c.execute('''CREATE TABLE IF NOT EXISTS pedidos 
                  (id TEXT PRIMARY KEY, cliente TEXT, direccion TEXT, lat REAL, lon REAL, estado TEXT, fecha_ingreso TEXT, foto TEXT)''')
     
-    # Paracaídas de seguridad por si la base de datos ya existía sin la columna de foto
     try:
         c.execute("ALTER TABLE pedidos ADD COLUMN foto TEXT")
     except:
@@ -160,8 +158,8 @@ def resolver_vrp_multivehiculo(coordenadas_tienda, lista_pedidos, num_vehiculos)
                 node_index = manager.IndexToNode(index)
                 ruta_actual.append(nodos[node_index])
                 index = solution.Value(routing.NextVar(index))
-            ruta_actual.append(nodos[manager.IndexToNode(index)]) 
-            if len(ruta_actual) > 2: 
+            # MEJORA: Eliminado el retorno a la matriz para generar una ruta "Solo Ida"
+            if len(ruta_actual) > 1: 
                 rutas_vehiculos[f"Vehículo {vehicle_id + 1}"] = ruta_actual
     return rutas_vehiculos
 
@@ -184,7 +182,7 @@ def trazar_ruta_calles(ruta_ordenada):
     return geometria_completa, dist_km, dist_km * 2 
 
 # ==========================================
-# 4. MOTOR IA PREDICTIVO (LÓGICA ORIGINAL RESTAURADA)
+# 4. MOTOR IA PREDICTIVO
 # ==========================================
 def obtener_factor_trafico_real():
     zona_horaria = pytz.timezone('America/Santiago')
@@ -201,7 +199,6 @@ def motor_ia_predictivo_avanzado(tiempo_base_minutos, clima_override):
     factor_trafico, estado_trafico, hora_leida = obtener_factor_trafico_real()
     factor_clima = 1.15 if clima_override == "Lluvia/Niebla" else 1.0
     
-    # El tiempo base ya es REAL de las calles, la IA solo lo penaliza por tráfico horario y clima
     minutos_finales = tiempo_base_minutos * factor_trafico * factor_clima
     return round(minutos_finales), estado_trafico, hora_leida
 
@@ -215,7 +212,6 @@ def limpiar_memoria_rutas():
     st.session_state['rutas_calculadas'] = None
     st.session_state['datos_trazado'] = {}
 
-# Paleta de colores nativos de Folium para variar los puntos de entrega
 COLORES_MARCADORES = ['red', 'blue', 'green', 'purple', 'orange', 'darkred', 'lightred', 'beige', 'darkblue', 'darkgreen', 'cadetblue', 'darkpurple', 'pink', 'lightblue', 'lightgreen', 'black']
 
 # ==========================================
@@ -262,29 +258,36 @@ if modulo == "1️⃣ Control de Manifiestos":
                         st.error("Error geográfico.")
 
     with col2:
-        st.subheader("Integración Masiva (CSV robusto)")
+        st.subheader("Integración Masiva (CSV Avanzado)")
         archivo = st.file_uploader("Formatos aceptados: .csv", type=["csv"])
         if archivo and st.button("Procesar Lote de Datos", type="primary"):
-            df = pd.read_csv(archivo)
+            # MEJORA: Lectura universal robusta (soporta ; , utf-8 y latin1 automáticamente)
+            try:
+                df = pd.read_csv(archivo, sep=None, engine='python', encoding='utf-8')
+            except UnicodeDecodeError:
+                archivo.seek(0)
+                df = pd.read_csv(archivo, sep=None, engine='python', encoding='latin1')
+                
             df.columns = df.columns.str.strip().str.lower()
             
             if 'cliente' in df.columns and 'direccion' in df.columns:
+                df = df.dropna(subset=['cliente', 'direccion']) # Elimina filas vacías
                 bar = st.progress(0)
                 exito = 0
                 for idx, row in df.iterrows():
-                    dir_texto = str(row['direccion'])
-                    if dir_texto.strip() and dir_texto != 'nan':
+                    dir_texto = str(row['direccion']).strip()
+                    if dir_texto and dir_texto.lower() != 'nan':
                         coords = obtener_coordenadas(dir_texto)
                         if coords:
                             id_ped = f"PED-{random.randint(10000, 99999)}"
-                            guardar_pedido_db(id_ped, str(row['cliente']), dir_texto, coords[0], coords[1])
+                            guardar_pedido_db(id_ped, str(row['cliente']).strip(), dir_texto, coords[0], coords[1])
                             exito += 1
                     bar.progress((idx + 1) / len(df))
                 limpiar_memoria_rutas()
-                st.success(f"Lote procesado. {exito} registros insertados.")
+                st.success(f"Lote procesado. {exito} registros insertados de {len(df)} válidos.")
                 st.rerun()
             else:
-                st.error("El archivo CSV debe contener exactamente las columnas 'cliente' y 'direccion'.")
+                st.error("El archivo CSV debe contener las columnas 'cliente' y 'direccion'. Revisa los encabezados.")
 
     st.divider()
     st.subheader("Base de Datos Activa (Visualizador de PoD)")
@@ -294,7 +297,6 @@ if modulo == "1️⃣ Control de Manifiestos":
             col_info, col_btn = st.columns([8, 2])
             
             with col_info:
-                # Panel expandible para revisar los detalles y la foto de la entrega
                 with st.expander(f"📦 {p['id']} | 👤 {p['cliente']} | 📍 {p['direccion']} | 🚦 {p['estado']}"):
                     st.write(f"**Fecha de Ingreso:** {p['fecha']}")
                     if p['estado'] == 'Entregado':
@@ -355,19 +357,17 @@ elif modulo == "2️⃣ Ruteo y Optimización":
                     if vehiculo in st.session_state.get('datos_trazado', {}):
                         datos_v = st.session_state['datos_trazado'][vehiculo]
                         
-                        # Integración del motor IA predictivo restaurado
                         eta_ia, estado_trafico, hora_leida = motor_ia_predictivo_avanzado(datos_v["tiempo"], ia_clima)
                         
                         st.markdown(f"### 🚚 {vehiculo}")
-                        st.write(f"**Distancia:** {round(datos_v['dist'], 1)} km | **Tráfico:** {estado_trafico}")
-                        st.metric(label=f"⏱️ ETA Real en Calles", value=f"{eta_ia} min")
+                        st.write(f"**Distancia (Solo Ida):** {round(datos_v['dist'], 1)} km | **Tráfico:** {estado_trafico}")
+                        st.metric(label=f"⏱️ ETA Real a Último Cliente", value=f"{eta_ia} min")
                         
                         folium.PolyLine(datos_v["geom"], color=color_v, weight=6, opacity=0.85).add_to(mapa)
                     else:
                         st.warning(f"⚠️ Datos en proceso para {vehiculo}.")
 
     with col_mapa:
-        # Coloreo dinámico y aleatorio por cada punto de entrega en el mapa
         for j, p in enumerate(pedidos_pendientes):
             color_marcador = COLORES_MARCADORES[j % len(COLORES_MARCADORES)]
             folium.Marker(p['coordenadas'], popup=f"{p['id']} - {p['cliente']}", icon=folium.Icon(color=color_marcador, icon="info-sign")).add_to(mapa)
@@ -389,12 +389,10 @@ elif modulo == "3️⃣ Portal Conductor (Terreno)":
                 st.write(f"**ID:** {p['id']}")
                 st.info("Usa el icono de rotación 🔄 de tu cámara móvil para alternar entre cámara frontal o trasera.")
                 
-                # Se habilita la captura de imagen
                 foto_capturada = st.camera_input("Capturar evidencia fotográfica", key=f"cam_{p['id']}")
                 
                 if st.button("✅ Confirmar Entrega", key=f"btn_{p['id']}", type="primary", use_container_width=True):
                     if foto_capturada:
-                        # Convertimos la imagen a texto encriptado (Base64) para guardarla en SQL
                         foto_b64 = base64.b64encode(foto_capturada.getvalue()).decode()
                         actualizar_estado_y_foto_db(p['id'], "Entregado", foto_b64)
                     else:
