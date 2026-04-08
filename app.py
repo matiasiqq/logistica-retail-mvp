@@ -164,7 +164,7 @@ def limpiar_ruta_guardada():
 # ==========================================
 st.sidebar.title("🌐 Optiaflux")
 st.sidebar.markdown("---")
-seccion = st.sidebar.radio("Navegación:", ["📥 Cargar Pedidos", "🧠 Rutas e IA Predictiva"])
+seccion = st.sidebar.radio("Navegación:", ["📥 Cargar Pedidos", "Rutas e IA Predictiva"])
 st.sidebar.markdown("---")
 
 st.sidebar.subheader("📡 Conexión de Datos")
@@ -177,7 +177,7 @@ st.sidebar.info(f"📦 Pedidos en Red: {len(pedidos_globales)}")
 # ------------------------------------------
 # SECCIÓN 1: GESTIÓN DE PEDIDOS Y CARGA MASIVA
 # ------------------------------------------
-if seccion == "📥 Cargar Pedidos":
+if seccion == "Cargar Pedidos":
     st.title("📥 Gestión de Pedidos - Optiaflux")
     col1, col2 = st.columns(2)
     
@@ -268,9 +268,9 @@ elif seccion == "🧠 Rutas e IA Predictiva":
     with col_datos:
         st.markdown("### ⚙️ Centro de Comando")
         if len(pedidos_globales) == 0:
-            st.info("⚠️ Ingresa pedidos para activar el algoritmo.")
+            st.info(" Ingresa pedidos para activar el algoritmo.")
         else:
-            if st.button("🚀 Optimizar por Calles y Tránsito", type="primary", use_container_width=True):
+            if st.button("Optimizar por Calles y Tránsito", type="primary", use_container_width=True):
                 with st.spinner("Conectando con satélites de tránsito vehicular..."):
                     # 1. Optimiza usando tiempos reales
                     ruta_ordenada, tiempo_base = calcular_ruta_optima_real(coord_tienda, pedidos_globales)
