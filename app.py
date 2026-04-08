@@ -3,6 +3,7 @@ import folium
 from streamlit_folium import st_folium
 import math
 import pandas as pd
+import random
 from geopy.geocoders import Nominatim
 
 # ==========================================
@@ -10,14 +11,12 @@ from geopy.geocoders import Nominatim
 # ==========================================
 st.set_page_config(page_title="Optiaflux | Logística Inteligente", page_icon="🌐", layout="wide")
 
-# Inicializamos el geocodificador para buscar direcciones
 geolocalizador = Nominatim(user_agent="optiaflux_app")
 
 # ==========================================
 # 2. MOTORES MATEMÁTICOS Y LÓGICOS
 # ==========================================
 def obtener_coordenadas(direccion):
-    """Convierte texto de dirección en coordenadas."""
     try:
         ubicacion = geolocalizador.geocode(f"{direccion}, Chile")
         if ubicacion:
@@ -27,7 +26,6 @@ def obtener_coordenadas(direccion):
         return None
 
 def calcular_distancia_haversine(coord1, coord2):
-    """Calcula distancia real considerando la curvatura de la Tierra."""
     R = 6371.0 
     lat1, lon1 = math.radians(coord1[0]), math.radians(coord1[1])
     lat2, lon2 = math.radians(coord2[0]), math.radians(coord2[1])
@@ -37,8 +35,7 @@ def calcular_distancia_haversine(coord1, coord2):
     return R * c 
 
 def calcular_ruta_optima(coordenadas_tienda, lista_pedidos):
-    """Algoritmo del vecino más cercano para ruteo logístico."""
-    ruta_final = [{"id": "TIENDA", "coordenadas": coordenadas_tienda, "cliente": "Centro de Distribución", "direccion": "Central Operativa"}]
+    ruta_final = [{"id": "TIENDA", "coordenadas": coordenadas_tienda, "cliente": "Falabella Iquique", "direccion": "Central Operativa"}]
     pedidos_pendientes = lista_pedidos.copy()
     punto_actual = coordenadas_tienda
     distancia_total = 0.0
@@ -56,7 +53,6 @@ def calcular_ruta_optima(coordenadas_tienda, lista_pedidos):
     return ruta_final, distancia_total
 
 def motor_ia_predictivo(distancia_km, nivel_trafico, clima):
-    """Motor predictivo simulado de Optiaflux."""
     velocidad_base_kmh = 45.0 
     peso_trafico = {"Bajo (Despejado)": 1.0, "Moderado (Normal)": 0.70, "Alto (Taco)": 0.40}
     peso_clima = {"Óptimo (Despejado)": 1.0, "Adverso (Lluvia/Niebla)": 0.85}
@@ -71,53 +67,56 @@ def motor_ia_predictivo(distancia_km, nivel_trafico, clima):
 if 'lista_pedidos' not in st.session_state:
     st.session_state['lista_pedidos'] = []
 
-coord_tienda = [-20.2730, -70.1030] # Base operativa
+# Coordenadas actualizadas a Falabella (Mallplaza Iquique aprox)
+coord_tienda = [-20.2447, -70.1415] 
 
 # ==========================================
 # 4. INTERFAZ GRÁFICA (FRONTEND)
 # ==========================================
 
-# -- Menú Lateral --
 st.sidebar.title("🌐 Optiaflux")
 st.sidebar.markdown("---")
 seccion = st.sidebar.radio("Navegación:", ["📥 Cargar Pedidos", "🧠 Rutas e IA Predictiva"])
 st.sidebar.markdown("---")
 
 st.sidebar.subheader("⚙️ Parámetros del Entorno (IA)")
-st.sidebar.caption("Alimenta el motor predictivo con el estado actual.")
 ia_trafico = st.sidebar.selectbox("Nivel de Tráfico actual:", ["Bajo (Despejado)", "Moderado (Normal)", "Alto (Taco)"])
 ia_clima = st.sidebar.selectbox("Condición Climática:", ["Óptimo (Despejado)", "Adverso (Lluvia/Niebla)"])
 
 st.sidebar.markdown("---")
 st.sidebar.info(f"📦 Pedidos en memoria: {len(st.session_state['lista_pedidos'])}")
 
-# -- Sección 1: Gestión de Pedidos --
+# ------------------------------------------
+# SECCIÓN 1: GESTIÓN DE PEDIDOS
+# ------------------------------------------
 if seccion == "📥 Cargar Pedidos":
     st.title("📥 Gestión de Pedidos - Optiaflux")
     
     col1, col2 = st.columns(2)
     
     with col1:
-        st.subheader("Geocodificador (Ingreso Manual)")
+        st.subheader("Ingreso Manual")
         with st.form("form_pedido"):
-            id_pedido = st.text_input("ID del Pedido (Ej: PED-005)")
+            # Eliminamos la solicitud manual del ID del pedido
             nombre_cliente = st.text_input("Nombre del Cliente")
             direccion_texto = st.text_input("Dirección (Ej: Los Cóndores 123, Alto Hospicio)")
             
             btn_guardar = st.form_submit_button("➕ Buscar y Agregar Pedido")
             
-            if btn_guardar and id_pedido and nombre_cliente and direccion_texto:
+            if btn_guardar and nombre_cliente and direccion_texto:
                 with st.spinner('Motor Optiaflux buscando coordenadas...'):
                     coords = obtener_coordenadas(direccion_texto)
                     if coords:
+                        # Generación de ID al azar
+                        id_aleatorio = f"PED-{random.randint(1000, 9999)}"
                         nuevo_pedido = {
-                            "id": id_pedido, 
+                            "id": id_aleatorio, 
                             "coordenadas": coords, 
                             "cliente": nombre_cliente,
                             "direccion": direccion_texto
                         }
                         st.session_state['lista_pedidos'].append(nuevo_pedido)
-                        st.success(f"¡Éxito! Coordenadas mapeadas para: {direccion_texto}")
+                        st.success(f"¡Éxito! Pedido {id_aleatorio} mapeado para: {direccion_texto}")
                     else:
                         st.error("❌ Optiaflux no encontró la dirección. Intenta agregar la ciudad.")
 
@@ -131,39 +130,72 @@ if seccion == "📥 Cargar Pedidos":
 
     st.markdown("---")
     st.subheader("📋 Base de Datos Optiaflux")
+    
+    # Sistema de borrado individual interactivo
     if len(st.session_state['lista_pedidos']) > 0:
-        df_mostrar = pd.DataFrame([{
-            "ID": p["id"], 
-            "Cliente": p["cliente"], 
-            "Dirección": p["direccion"]
-        } for p in st.session_state['lista_pedidos']])
-        st.dataframe(df_mostrar, use_container_width=True)
-        
-        if st.button("🗑️ Limpiar Memoria"):
+        st.write("Gestiona los pedidos ingresados. Puedes eliminar errores específicos:")
+        for i, pedido in enumerate(st.session_state['lista_pedidos']):
+            # Creamos columnas para poner el botón de borrar al lado de la información
+            col_info, col_btn = st.columns([5, 1])
+            col_info.write(f"📦 **{pedido['id']}** | 👤 {pedido['cliente']} | 📍 {pedido['direccion']}")
+            if col_btn.button("❌ Eliminar", key=f"del_{pedido['id']}_{i}"):
+                st.session_state['lista_pedidos'].pop(i)
+                st.rerun() # Recarga la app para actualizar la lista al instante
+                
+        st.markdown("---")
+        if st.button("🗑️ Limpiar Toda la Memoria", type="secondary"):
             st.session_state['lista_pedidos'] = []
             st.rerun()
     else:
         st.warning("No hay carga logística asignada.")
 
-# -- Sección 2: Mapa y Ruteo Predictivo --
+# ------------------------------------------
+# SECCIÓN 2: MAPA PERMANENTE Y RUTEO
+# ------------------------------------------
 elif seccion == "🧠 Rutas e IA Predictiva":
-    st.title("🧠 Optiaflux: Motor de Ruteo Predictivo")
+    st.title("🧠 Optiaflux: Ruteo Dinámico")
     
-    if len(st.session_state['lista_pedidos']) == 0:
-        st.info("⚠️ Ingresa pedidos en la sección anterior para activar el motor.")
-    else:
-        col_datos, col_mapa = st.columns([1, 2])
+    col_datos, col_mapa = st.columns([1, 2])
+    
+    # 1. Preparamos el mapa base SIEMPRE visible
+    mapa_optiaflux = folium.Map(location=coord_tienda, zoom_start=13)
+    
+    # Marcador de la Tienda Principal (Falabella)
+    folium.Marker(
+        coord_tienda, 
+        popup="FALABELLA IQUIQUE (Central)", 
+        icon=folium.Icon(color="black", icon="home")
+    ).add_to(mapa_optiaflux)
+    
+    # Dibujamos todos los pedidos como pines rojos, estén ruteados o no
+    for paso in st.session_state['lista_pedidos']:
+        folium.Marker(
+            paso['coordenadas'], 
+            popup=f"{paso['id']} - {paso['cliente']}", 
+            icon=folium.Icon(color="red", icon="info-sign")
+        ).add_to(mapa_optiaflux)
+
+    with col_datos:
+        st.markdown("### ⚙️ Centro de Comando")
         
-        with col_datos:
-            st.markdown("### ⚙️ Centro de Comando")
+        if len(st.session_state['lista_pedidos']) == 0:
+            st.info("⚠️ Ingresa pedidos en la sección anterior para activar el algoritmo.")
+        else:
             if st.button("🚀 Ejecutar Algoritmo de Ruteo", type="primary", use_container_width=True):
+                # Calcular ruta matemática
                 ruta_ordenada, total_km = calcular_ruta_optima(coord_tienda, st.session_state['lista_pedidos'])
                 eta_ia = motor_ia_predictivo(total_km, ia_trafico, ia_clima)
                 
                 st.success(f"**Distancia Optimizada:** {round(total_km, 2)} km")
                 st.metric(label="⏱️ ETA Predicho por Optiaflux IA", value=f"{eta_ia} min", delta=f"Tráfico: {ia_trafico.split(' ')[0]}", delta_color="inverse")
                 
-                # --- NUEVO: Generación de Archivo Descargable ---
+                # Dibujar la línea de la ruta en el mapa que ya creamos
+                puntos_ruta = [coord_tienda]
+                for paso in ruta_ordenada[1:]:
+                    puntos_ruta.append(paso['coordenadas'])
+                folium.PolyLine(puntos_ruta, color="purple", weight=5, opacity=0.8).add_to(mapa_optiaflux)
+                
+                # Archivo Descargable
                 df_descarga = pd.DataFrame([{
                     "Secuencia": i,
                     "ID Pedido": paso["id"],
@@ -172,35 +204,21 @@ elif seccion == "🧠 Rutas e IA Predictiva":
                 } for i, paso in enumerate(ruta_ordenada)])
                 
                 csv_export = df_descarga.to_csv(index=False).encode('utf-8')
-                
                 st.download_button(
-                    label="📥 Descargar Hoja de Ruta (CSV/Excel)",
+                    label="📥 Descargar Hoja de Ruta",
                     data=csv_export,
                     file_name='hoja_ruta_optiaflux.csv',
                     mime='text/csv',
                     use_container_width=True
                 )
-                st.markdown("---")
-                # ------------------------------------------------
                 
+                st.markdown("---")
                 st.markdown("#### Manifiesto de Ruta:")
                 for i, paso in enumerate(ruta_ordenada):
                     dir_mostrar = paso.get('direccion', 'Centro de Distribución')
                     st.write(f"**{i}.** {paso['id']} ({dir_mostrar})")
-                
-                with col_mapa:
-                    st.markdown("### 📍 Panel de Rastreo Satelital")
-                    mapa = folium.Map(location=coord_tienda, zoom_start=13)
-                    folium.Marker(coord_tienda, popup="OPERA CENTRAL", icon=folium.Icon(color="black", icon="home")).add_to(mapa)
-                    
-                    puntos_ruta = [coord_tienda]
-                    for paso in ruta_ordenada[1:]:
-                        folium.Marker(
-                            paso['coordenadas'], 
-                            popup=f"{paso['id']} - {paso['cliente']}", 
-                            icon=folium.Icon(color="red", icon="info-sign")
-                        ).add_to(mapa)
-                        puntos_ruta.append(paso['coordenadas'])
-                        
-                    folium.PolyLine(puntos_ruta, color="purple", weight=5, opacity=0.8).add_to(mapa)
-                    st_folium(mapa, width=800, height=500)
+
+    with col_mapa:
+        st.markdown("### 📍 Panel de Rastreo Satelital")
+        # Renderizamos el mapa al final para que incluya las líneas si se presionó el botón
+        st_folium(mapa_optiaflux, width=800, height=500)
