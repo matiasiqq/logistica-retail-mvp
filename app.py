@@ -3,6 +3,7 @@ import folium
 from streamlit_folium import st_folium
 import math
 import pandas as pd
+import random
 import os
 import sqlite3
 import requests
@@ -452,23 +453,19 @@ elif modulo == "4️⃣ Inteligencia de Negocios (BI)":
     else:
         df = pd.DataFrame(datos_brutos)
         
-        # Procesamiento Cronológico y SLA (Acuerdo de Nivel de Servicio)
+        # Procesamiento Cronológico y SLA
         df['fecha_ingreso_dt'] = pd.to_datetime(df['fecha'], errors='coerce')
         df['fecha_entrega_dt'] = pd.to_datetime(df['fecha_entrega'], errors='coerce')
         
-        # Fechas y Agrupaciones
         df['dia'] = df['fecha_ingreso_dt'].dt.date
         df['mes'] = df['fecha_ingreso_dt'].dt.to_period('M').astype(str)
         df['año'] = df['fecha_ingreso_dt'].dt.year
         
-        # Estimación de Demora y SLA (Consideramos "A tiempo" si se entrega dentro de 180 min - 3 horas)
         df['minutos_demora'] = (df['fecha_entrega_dt'] - df['fecha_ingreso_dt']).dt.total_seconds() / 60
         df['cumple_tiempo'] = df.apply(lambda x: "A tiempo" if pd.notnull(x['minutos_demora']) and x['minutos_demora'] <= 180 else ("Atrasado" if pd.notnull(x['minutos_demora']) else "Pendiente"), axis=1)
         
-        # Estimación de Género/Entidad
         df['perfil_cliente'] = df['cliente'].apply(predecir_genero_o_entidad)
         
-        # Métricas Globales
         total = len(df)
         entregados = len(df[df['estado'] == 'Entregado'])
         pendientes = total - entregados
@@ -485,7 +482,6 @@ elif modulo == "4️⃣ Inteligencia de Negocios (BI)":
         
         st.divider()
         
-        # Gráficos Analíticos
         r1_col1, r1_col2 = st.columns(2)
         
         with r1_col1:
@@ -511,11 +507,11 @@ elif modulo == "4️⃣ Inteligencia de Negocios (BI)":
         with r2_col2:
             st.markdown("#### 📍 Densidad Espacial de la Demanda")
             mapa_calor = folium.Map(location=COORD_CENTRAL, zoom_start=13)
-            coordenadas_calor = [[p['lat'], p['lon']] for _, p in df.iterrows()]
+            # CORRECCIÓN DE BUG APLICADA AQUÍ: Extraemos [lat, lon] correctamente desde la lista 'coordenadas'
+            coordenadas_calor = [[p['coordenadas'][0], p['coordenadas'][1]] for _, p in df.iterrows()]
             HeatMap(coordenadas_calor, radius=18, blur=12).add_to(mapa_calor)
             st_folium(mapa_calor, width=500, height=350)
             
-        # Tabla resumen por periodos
         st.divider()
         st.markdown("#### 🗓️ Desglose de Operaciones Históricas")
         c_mes, c_ano = st.columns(2)
